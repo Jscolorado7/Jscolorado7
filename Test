@@ -1,0 +1,226 @@
+import pygame
+import pygame_gui
+import sys
+import time
+
+# Initialize pygame
+pygame.init()
+
+# Set up the game window
+window_size = (800, 600)
+screen = pygame.display.set_mode(window_size)
+pygame.display.setCaption("Top-Down 2D RPG")
+
+# Set up the GUI manager
+manager = pygame_gui.UIManager(window_size)
+
+# Load background image
+background_image_path = "Sprites/Grass.png"  # Path to your background image
+background_image = pygame.image.load(background_image_path)
+background_image = pygame.transform.scale(background_image, window_size)
+
+# Load images
+def load_and_scale_image(path, size):
+    return pygame.transform.scale(pygame.image.load(path), size)
+
+# Original sizes for images
+character_image_path = "Sprites/PlayerIdle.png"
+character_image = load_and_scale_image(character_image_path, (64, 64))
+character_rect = character_image.get_rect()
+character_rect.topleft = (100, 100)
+character_speed = 5
+
+rock_image_path = "Sprites/Rock.png"
+rock_image = load_and_scale_image(rock_image_path, (64, 64))
+rock_rect = rock_image.get_rect(topleft=(200, 100))
+# Reduce collision size
+rock_collision_rect = rock_rect.inflate(-32, -32)
+
+tree_image_path = "Sprites/Tree.png"
+tree_image = load_and_scale_image(tree_image_path, (64, 64))
+tree_rect = tree_image.get_rect(topleft=(300, 100))
+# Reduce collision size further
+tree_collision_rect = tree_rect.inflate(-48, -48)
+
+wood_image = load_and_scale_image("Sprites/Wood.png", (64, 64))
+
+# Inventory
+inventory = {
+    "rock": 0,
+    "wood": 0
+}
+
+# Inventory slots
+inventory_slots = [None] * 10
+slot_size = 64  # Adjust slot size to fit the images
+
+# Mining variables
+is_mining = False
+mining_start_time = None
+mining_cooldown = 1  # 1 hit per second
+rock_value = 5
+tree_value = 5
+rock_respawn_time = 3  # 3 seconds to respawn
+tree_respawn_time = 3  # 3 seconds to respawn
+rock_collected = False
+tree_collected = False
+rock_mining_start_time = None
+tree_mining_start_time = None
+interaction_range = 80  # Increased interaction range
+
+# Character health
+character_health = 100
+max_health = 100
+
+# Function to move character with WASD keys and handle collision
+def handle_movement(keys, character, objects):
+    dx = 0
+    dy = 0
+    if keys[pygame.K_w]:
+        dy = -character_speed
+    if keys[pygame.K_s]:
+        dy = character_speed
+    if keys[pygame.K_a]:
+        dx = -character_speed
+    if keys[pygame.K_d]:
+        dx = character_speed
+
+    # Check for collisions
+    character.x += dx
+    for obj in objects:
+        if obj and character.colliderect(obj):
+            if dx > 0:  # Moving right; Hit the left side of the object
+                character.right = obj.left
+            if dx < 0:  # Moving left; Hit the right side of the object
+                character.left = obj.right
+
+    character.y += dy
+    for obj in objects:
+        if obj and character.colliderect(obj):
+            if dy > 0:  # Moving down; Hit the top side of the object
+                character.bottom = obj.top
+            if dy < 0:  # Moving up; Hit the bottom side of the object
+                character.top = obj.bottom
+
+# Function to check if character is within interaction range of target position
+def is_within_range(character, target_pos, range):
+    return abs(character.x - target_pos[0]) < range and abs(character.y - target_pos[1]) < range
+
+# Function to create inventory UI elements
+def create_inventory_ui():
+    global inventory_slots
+    x_start = 150
+    y_start = 500
+    for i in range(10):
+        slot_rect = pygame.Rect(x_start + i * (slot_size + 5), y_start, slot_size, slot_size)
+        empty_surface = pygame.Surface((slot_size, slot_size), pygame.SRCALPHA)
+        inventory_slots[i] = pygame_gui.elements.UIImage(relative_rect=slot_rect,
+                                                         image_surface=empty_surface,
+                                                         manager=manager)
+
+# Initialize inventory UI
+create_inventory_ui()
+
+# Function to update inventory display
+def update_inventory_display():
+    global inventory_slots
+    font = pygame.font.Font(None, 24)
+    for i in range(10):
+        empty_surface = pygame.Surface((slot_size, slot_size), pygame.SRCALPHA)
+        inventory_slots[i].set_image(empty_surface)
+        if inventory['rock'] > 0 and i == 0:
+            text_surf = font.render(str(inventory['rock']), True, (255, 255, 255))
+            empty_surface.blit(rock_image, (0, 0))
+            empty_surface.blit(text_surf, (slot_size - text_surf.get_width(), slot_size - text_surf.get_height()))
+            inventory_slots[i].set_image(empty_surface)
+        if inventory['wood'] > 0 and i == 1:
+            text_surf = font.render(str(inventory['wood']), True, (255, 255, 255))
+            empty_surface.blit(wood_image, (0, 0))
+            empty_surface.blit(text_surf, (slot_size - text_surf.get_width(), slot_size - text_surf.get_height()))
+            inventory_slots[i].set_image(empty_surface)
+
+# Function to draw health bar
+def draw_health_bar(screen, x, y, health, max_health):
+    bar_length = 100
+    bar_height = 10
+    fill = (health / max_health) * bar_length
+    border_color = (255, 255, 255)
+    fill_color = (255, 0, 0)
+    border_rect = pygame.Rect(x, y, bar_length, bar_height)
+    fill_rect = pygame.Rect(x, y, fill, bar_height)
+    pygame.draw.rect(screen, fill_color, fill_rect)
+    pygame.draw.rect(screen, border_color, border_rect, 2)
+
+# Initialize clock
+clock = pygame.time.Clock()
+
+# Main game loop
+running = True
+target_pos = character_rect.center
+dragging_item = None
+dragging_item_index = None
+while running:
+    time_delta = clock.tick(60) / 1000.0  # Ensure time_delta is in seconds
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        manager.process_events(event)
+
+    keys = pygame.key.get_pressed()
+    handle_movement(keys, character_rect, [rock_collision_rect if not rock_collected else None, tree_collision_rect if not tree_collected else None])
+
+    # Ensure mining_start_time is initialized
+    if mining_start_time is None:
+        mining_start_time = time.time()
+
+    if not rock_collected and is_within_range(character_rect, rock_rect.center, interaction_range):
+        current_time = time.time()
+        if current_time - mining_start_time >= mining_cooldown:
+            inventory["rock"] += 1
+            rock_value -= 1
+            mining_start_time = current_time
+            if rock_value <= 0:
+                rock_collected = True
+                rock_mining_start_time = time.time()
+            update_inventory_display()
+
+    if not tree_collected and is_within_range(character_rect, tree_rect.center, interaction_range):
+        current_time = time.time()
+        if current_time - mining_start_time >= mining_cooldown:
+            inventory["wood"] += 1
+            tree_value -= 1
+            mining_start_time = current_time
+            if tree_value <= 0:
+                tree_collected = True
+                tree_mining_start_time = time.time()
+            update_inventory_display()
+
+    # Respawn resources if collected
+    if rock_collected and rock_mining_start_time:
+        if time.time() - rock_mining_start_time >= rock_respawn_time:
+            rock_collected = False
+            rock_value = 5
+
+    if tree_collected and tree_mining_start_time:
+        if time.time() - tree_mining_start_time >= tree_respawn_time:
+            tree_collected = False
+            tree_value = 5
+
+    # Draw everything
+    screen.blit(background_image, (0, 0))  # Draw background
+    if not rock_collected:
+        screen.blit(rock_image, rock_rect.topleft)
+    if not tree_collected:
+        screen.blit(tree_image, tree_rect.topleft)
+    screen.blit(character_image, character_rect.topleft)
+    draw_health_bar(screen, 10, 10, character_health, max_health)
+
+    manager.update(time_delta)
+    manager.draw_ui(screen)
+
+    pygame.display.flip()
+
+pygame.quit()
+sys.exit()
